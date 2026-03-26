@@ -91,6 +91,6 @@ private final class UserServiceLive(kv: KeyValue) extends UserService {
   def listUsers(req: ListUsersRequest): UIO[ListUsersResponse] =
     (for {
       keys  <- kv.keys()
-      users <- ZIO.foreach(keys)(id => kv.get[User](id).map(_.map(_.value)))
+      users <- ZIO.foreachPar(keys)(id => kv.get[User](id).map(_.map(_.value))).withParallelism(4)
     } yield ListUsersResponse(users.flatten)).orDie
 }
