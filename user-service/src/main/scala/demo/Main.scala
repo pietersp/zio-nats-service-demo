@@ -15,6 +15,8 @@ import zio.nats.*
  * Prerequisites:
  *   - A JetStream-enabled NATS server: `docker run -p 4222:4222 nats -js`
  *   - Optionally set `NATS_URL` to override the default `nats://localhost:4222`
+ *
+ * Run with: sbt "userService/run"
  */
 object Main extends ZIOAppDefault {
 
