@@ -45,7 +45,7 @@ Spawns concurrent worker fibers that exercise all five user service endpoints:
 | Reader  | 8 | GETs a random user every ~30 ms |
 | Updater | 3+1 | Updates a random user every ~80 ms; one fiber injects blank names (1-in-5) to exercise `ValidationError` |
 | Deleter | 1 | Deletes a random user every ~200 ms when pool > 80 |
-| Lister  | 1 | Lists all users every 3 s |
+| Lister  | 1 | Lists all users every 1 s |
 
 Stats are printed every 5 seconds:
 
