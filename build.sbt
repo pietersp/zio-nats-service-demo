@@ -1,5 +1,6 @@
 ThisBuild / scalaVersion := "3.3.7"
 ThisBuild / scalacOptions ++= Seq("-deprecation", "-feature")
+ThisBuild / Compile / semanticdbEnabled := true
 ThisBuild / run / fork := true
 
 val zioNats = "io.github.pietersp" %% "zio-nats" % "0.1.0-RC6"

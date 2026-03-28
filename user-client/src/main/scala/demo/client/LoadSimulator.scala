@@ -260,16 +260,15 @@ object LoadSimulator {
    */
   private def reporterLoop(pool: Pool, stats: Ref[Stats]): UIO[Nothing] = {
     val step =
-      ZIO.sleep(reportEvery) *>
-        pool.get.map(_.size).flatMap { poolSize =>
-          stats.getAndUpdate(s => Stats(lastInfraError = s.lastInfraError)).flatMap { snapshot =>
-            Console
-              .printLine(
-                snapshot.report(reportEvery.toSeconds.toDouble, poolSize, numCreators, numReaders, numUpdaters)
-              )
-              .orDie
-          }
+      pool.get.map(_.size).flatMap { poolSize =>
+        stats.getAndUpdate(s => Stats(lastInfraError = s.lastInfraError)).flatMap { snapshot =>
+          Console
+            .printLine(
+              snapshot.report(reportEvery.toSeconds.toDouble, poolSize, numCreators, numReaders, numUpdaters)
+            )
+            .orDie
         }
+      }.delay(reportEvery)
     step.forever
   }
 
