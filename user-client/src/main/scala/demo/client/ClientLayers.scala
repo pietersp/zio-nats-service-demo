@@ -12,7 +12,8 @@ object ClientLayers {
    * communicates with the user service via `requestService`, which uses plain
    * NATS request-reply.
    *
-   * Reads `NATS_URL` from the environment (defaults to `nats://localhost:4222`).
+   * Reads `NATS_URL` from the environment (defaults to
+   * `nats://localhost:4222`).
    */
   val full: ZLayer[Any, Throwable, Nats] =
     ZLayer.make[Nats](

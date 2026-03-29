@@ -1,6 +1,10 @@
 # Created by https://www.toptal.com/developers/gitignore/api/bloop,scala,metals,intellij,sbt
 # Edit at https://www.toptal.com/developers/gitignore?templates=bloop,scala,metals,intellij,sbt
 
+### AI ###
+docs/plans
+null
+
 ### Bloop ###
 .bloop/
 

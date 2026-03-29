@@ -41,7 +41,8 @@ object UserEndpoints {
       .inGroup("users")
       .in[UpdateUserRequest]
       .out[User]
-      .failsWith[UserNotFound, ValidationError]
+      .failsWith[UserNotFound]
+      .failsWith[ValidationError]
 
   val deleteUser: ServiceEndpoint[DeleteUserRequest, UserNotFound, DeleteUserResponse] =
     ServiceEndpoint("delete")

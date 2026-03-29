@@ -68,20 +68,33 @@ object LoadSimulator {
       creates + getOk + getMissed + updateOk + updateMissed + updateInvalid + deletes + lists
 
     def report(intervalSecs: Double, poolSize: Int, numCreators: Int, numReaders: Int, numUpdaters: Int): String = {
-      def rate(n: Long) = f"${n / intervalSecs}%.0f/s"
-      def rateDecimal(n: Long) = f"${n / intervalSecs}%.3f/s"
+      def rate(n: Long)                       = f"${n / intervalSecs}%.0f/s"
+      def rateDecimal(n: Long)                = f"${n / intervalSecs}%.3f/s"
       def infraLine(count: Long, msg: String) = if (count > 0) f"$count%5d  ${msg.take(60)}" else "     -"
-      val totalRate     = f"${totalOps / intervalSecs}%.0f"
-      val content       = f" Load Report [${intervalSecs.toInt}s interval | $totalRate ops/s | pool: $poolSize users] "
-      val width         = content.length + 8
-      val topLine       = "╔═══" + content + "═══╗"
-      val botLine       = "╚" + ("═" * (width - 2)) + "╝"
-      val header        = f"""  ${"OP"}%-8s ${"WORKERS"}%8s ${"RATE"}%8s  ${"NOT_FOUND"}%9s  ${"VALIDATION"}%10s  ${"INFRA"}%62s"""
-      val createLine    = f"""  ${"create"}%-8s ${numCreators}%8d ${rate(creates)}%8s  ${"-"}%9s  ${updateInvalid}%10d  ${infraLine(createInfraErrors, createInfraErrorMsg)}%62s"""
-      val getLine       = f"""  ${"get"}%-8s ${numReaders}%8d ${rate(getOk + getMissed)}%8s  ${getMissed}%9d  ${"-"}%10s  ${infraLine(getInfraErrors, getInfraErrorMsg)}%62s"""
-      val updateLine    = f"""  ${"update"}%-8s ${numUpdaters}%8d ${rate(updateOk + updateMissed + updateInvalid)}%8s  ${updateMissed}%9d  ${updateInvalid}%10d  ${infraLine(updateInfraErrors, updateInfraErrorMsg)}%62s"""
-      val deleteLine    = f"""  ${"delete"}%-8s ${1}%8d ${rate(deletes)}%8s  ${0}%9d  ${"-"}%10s  ${infraLine(deleteInfraErrors, deleteInfraErrorMsg)}%62s"""
-      val listLine      = f"""  ${"list"}%-8s ${1}%8d ${rateDecimal(lists)}%8s  ${"-"}%9s  ${"-"}%10s  ${infraLine(listInfraErrors, listInfraErrorMsg)}%62s"""
+      val totalRate                           = f"${totalOps / intervalSecs}%.0f"
+      val content                             = f" Load Report [${intervalSecs.toInt}s interval | $totalRate ops/s | pool: $poolSize users] "
+      val width                               = content.length + 8
+      val topLine                             = "╔═══" + content + "═══╗"
+      val botLine                             = "╚" + ("═" * (width - 2)) + "╝"
+      val header                              =
+        f"""  ${"OP"}%-8s ${"WORKERS"}%8s ${"RATE"}%8s  ${"NOT_FOUND"}%9s  ${"VALIDATION"}%10s  ${"INFRA"}%62s"""
+      val createLine = f"""  ${"create"}%-8s ${numCreators}%8d ${rate(
+          creates
+        )}%8s  ${"-"}%9s  ${updateInvalid}%10d  ${infraLine(createInfraErrors, createInfraErrorMsg)}%62s"""
+      val getLine = f"""  ${"get"}%-8s ${numReaders}%8d ${rate(
+          getOk + getMissed
+        )}%8s  ${getMissed}%9d  ${"-"}%10s  ${infraLine(getInfraErrors, getInfraErrorMsg)}%62s"""
+      val updateLine = f"""  ${"update"}%-8s ${numUpdaters}%8d ${rate(
+          updateOk + updateMissed + updateInvalid
+        )}%8s  ${updateMissed}%9d  ${updateInvalid}%10d  ${infraLine(updateInfraErrors, updateInfraErrorMsg)}%62s"""
+      val deleteLine = f"""  ${"delete"}%-8s ${1}%8d ${rate(deletes)}%8s  ${0}%9d  ${"-"}%10s  ${infraLine(
+          deleteInfraErrors,
+          deleteInfraErrorMsg
+        )}%62s"""
+      val listLine = f"""  ${"list"}%-8s ${1}%8d ${rateDecimal(lists)}%8s  ${"-"}%9s  ${"-"}%10s  ${infraLine(
+          listInfraErrors,
+          listInfraErrorMsg
+        )}%62s"""
       s"""$topLine\n$header\n$createLine\n$getLine\n$updateLine\n$deleteLine\n$listLine\n  infra errors: $infraErrors  $lastInfraError\n$botLine"""
     }
   }
@@ -93,9 +106,30 @@ object LoadSimulator {
   private type Pool = Ref[Vector[String]]
 
   private val firstNames = Vector(
-    "Alice", "Bob", "Carol", "David", "Eve", "Frank", "Grace", "Hank",
-    "Iris", "Jack", "Kate", "Liam", "Mia", "Noah", "Olivia", "Paul",
-    "Quinn", "Rose", "Sam", "Tina", "Uma", "Victor", "Wendy", "Yara"
+    "Alice",
+    "Bob",
+    "Carol",
+    "David",
+    "Eve",
+    "Frank",
+    "Grace",
+    "Hank",
+    "Iris",
+    "Jack",
+    "Kate",
+    "Liam",
+    "Mia",
+    "Noah",
+    "Olivia",
+    "Paul",
+    "Quinn",
+    "Rose",
+    "Sam",
+    "Tina",
+    "Uma",
+    "Victor",
+    "Wendy",
+    "Yara"
   )
   private val domains = Vector("example.com", "test.org", "demo.io", "mail.net")
 
@@ -130,11 +164,15 @@ object LoadSimulator {
           .foldZIO(
             {
               case _: ValidationError => ZIO.unit // Business error - don't count as infra
-              case err: NatsError => stats.update(s => s.copy(
-                infraErrors = s.infraErrors + 1,
-                createInfraErrors = s.createInfraErrors + 1,
-                createInfraErrorMsg = err.toString,
-                lastInfraError = err.toString))
+              case err: NatsError     =>
+                stats.update(s =>
+                  s.copy(
+                    infraErrors = s.infraErrors + 1,
+                    createInfraErrors = s.createInfraErrors + 1,
+                    createInfraErrorMsg = err.toString,
+                    lastInfraError = err.toString
+                  )
+                )
             },
             user =>
               pool.update(_ :+ user.id) *>
@@ -155,11 +193,15 @@ object LoadSimulator {
           .foldZIO(
             {
               case _: UserNotFound => stats.update(s => s.copy(getMissed = s.getMissed + 1))
-              case err: NatsError  => stats.update(s => s.copy(
-                infraErrors = s.infraErrors + 1,
-                getInfraErrors = s.getInfraErrors + 1,
-                getInfraErrorMsg = err.toString,
-                lastInfraError = err.toString))
+              case err: NatsError  =>
+                stats.update(s =>
+                  s.copy(
+                    infraErrors = s.infraErrors + 1,
+                    getInfraErrors = s.getInfraErrors + 1,
+                    getInfraErrorMsg = err.toString,
+                    lastInfraError = err.toString
+                  )
+                )
             },
             _ => stats.update(s => s.copy(getOk = s.getOk + 1))
           ) *> ZIO.sleep(30.millis)
@@ -195,11 +237,15 @@ object LoadSimulator {
             {
               case _: UserNotFound    => stats.update(s => s.copy(updateMissed = s.updateMissed + 1))
               case _: ValidationError => stats.update(s => s.copy(updateInvalid = s.updateInvalid + 1))
-              case err: NatsError       => stats.update(s => s.copy(
-                infraErrors = s.infraErrors + 1,
-                updateInfraErrors = s.updateInfraErrors + 1,
-                updateInfraErrorMsg = err.toString,
-                lastInfraError = err.toString))
+              case err: NatsError     =>
+                stats.update(s =>
+                  s.copy(
+                    infraErrors = s.infraErrors + 1,
+                    updateInfraErrors = s.updateInfraErrors + 1,
+                    updateInfraErrorMsg = err.toString,
+                    lastInfraError = err.toString
+                  )
+                )
             },
             _ => stats.update(s => s.copy(updateOk = s.updateOk + 1))
           ) *> ZIO.sleep(80.millis)
@@ -225,11 +271,15 @@ object LoadSimulator {
                 .foldZIO(
                   {
                     case _: UserNotFound => ZIO.unit // Optimistic delete - already removed from pool
-                    case err: NatsError => stats.update(s => s.copy(
-                      infraErrors = s.infraErrors + 1,
-                      deleteInfraErrors = s.deleteInfraErrors + 1,
-                      deleteInfraErrorMsg = err.toString,
-                      lastInfraError = err.toString))
+                    case err: NatsError  =>
+                      stats.update(s =>
+                        s.copy(
+                          infraErrors = s.infraErrors + 1,
+                          deleteInfraErrors = s.deleteInfraErrors + 1,
+                          deleteInfraErrorMsg = err.toString,
+                          lastInfraError = err.toString
+                        )
+                      )
                   },
                   _ => stats.update(s => s.copy(deletes = s.deletes + 1))
                 ) *> ZIO.sleep(200.millis)
@@ -244,11 +294,16 @@ object LoadSimulator {
       nats
         .requestService(UserEndpoints.listUsers, ListUsersRequest(), callTimeout)
         .foldZIO(
-          { case err: NatsError => stats.update(s => s.copy(
-            infraErrors = s.infraErrors + 1,
-            listInfraErrors = s.listInfraErrors + 1,
-            listInfraErrorMsg = err.toString,
-            lastInfraError = err.toString)) },
+          { case err: NatsError =>
+            stats.update(s =>
+              s.copy(
+                infraErrors = s.infraErrors + 1,
+                listInfraErrors = s.listInfraErrors + 1,
+                listInfraErrorMsg = err.toString,
+                lastInfraError = err.toString
+              )
+            )
+          },
           _ => stats.update(s => s.copy(lists = s.lists + 1))
         ) *> ZIO.sleep(1.seconds)
     step.forever
@@ -260,15 +315,18 @@ object LoadSimulator {
    */
   private def reporterLoop(pool: Pool, stats: Ref[Stats]): UIO[Nothing] = {
     val step =
-      pool.get.map(_.size).flatMap { poolSize =>
-        stats.getAndUpdate(s => Stats(lastInfraError = s.lastInfraError)).flatMap { snapshot =>
-          Console
-            .printLine(
-              snapshot.report(reportEvery.toSeconds.toDouble, poolSize, numCreators, numReaders, numUpdaters)
-            )
-            .orDie
+      pool.get
+        .map(_.size)
+        .flatMap { poolSize =>
+          stats.getAndUpdate(s => Stats(lastInfraError = s.lastInfraError)).flatMap { snapshot =>
+            Console
+              .printLine(
+                snapshot.report(reportEvery.toSeconds.toDouble, poolSize, numCreators, numReaders, numUpdaters)
+              )
+              .orDie
+          }
         }
-      }.delay(reportEvery)
+        .delay(reportEvery)
     step.forever
   }
 
