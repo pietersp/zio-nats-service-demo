@@ -12,15 +12,20 @@ import scala.util.Random
  * Simulates concurrent production-like traffic against the user service.
  *
  * Worker counts scale dynamically with poolTarget:
- *   - creators: 1 per 1k of poolTarget (throttle when pool exceeds poolTarget)
- *   - readers: 1 per 500 of poolTarget — GET a random user every ~30 ms
- *   - updaters: 1 per 1k of poolTarget — UPDATE a random user every ~80 ms
- *   - 1 error injector — UPDATE with a blank name every ~500 ms (exercises
+ *   - creators: 1 per 10 of poolTarget (throttle when pool exceeds poolTarget)
+ *   - readers: 2 per 10 of poolTarget (or 1 per 5 of poolTarget) — GET a random user every ~30 ms
+ *   - updaters: 1 per 10 of poolTarget — UPDATE a random user every ~80 ms
+ *   - 1 error injector — UPDATE with a blank name every ~80 ms (exercises
  *     ValidationError)
- *   - 1 deleter fiber — DELETE a random user every ~200 ms when pool > 80
- *   - 1 lister fiber — LIST all users every 3 s
+ *   - 1 deleter fiber — DELETE a random user every ~200 ms when pool > poolMin
+ *   - 1 lister fiber — LIST all users every 1 s
  *
- * A stats reporter prints per-5-second throughput and error breakdown to
+ * Configuration (via env):
+ *   - POOL_TARGET (default 1000): The maximum size of the user pool before creators throttle.
+ *   - POOL_MIN (default 80): The minimum size of the user pool before deleters stop.
+ *   - REPORT_EVERY (default 5s): Interval for printing load reports.
+ *
+ * A stats reporter prints per-interval throughput and error breakdown to
  * stdout. Press Ctrl-C to stop cleanly.
  */
 object LoadSimulator {
@@ -28,15 +33,15 @@ object LoadSimulator {
   import Codecs.json.derived
 
   private val callTimeout = 5.seconds
-  private val poolTarget  = 1000
-  private val poolMin     = 80
-  private val reportEvery = 5.seconds
+  private val poolTarget  = sys.env.getOrElse("POOL_TARGET", "1000").toInt
+  private val poolMin     = sys.env.getOrElse("POOL_MIN", "80").toInt
+  private val reportEvery = sys.env.getOrElse("REPORT_EVERY_SECS", "5").toInt.seconds
 
   private def scaledWorkers(n: Int): Int = (n / 10).max(1)
 
-  private val numCreators = scaledWorkers(poolTarget)     // 1 per 1k target
-  private val numReaders  = scaledWorkers(poolTarget * 2) // 1 per 500 target
-  private val numUpdaters = scaledWorkers(poolTarget)     // 1 per 1k target
+  private val numCreators = scaledWorkers(poolTarget)     // 1 per 10 target
+  private val numReaders  = scaledWorkers(poolTarget * 2) // 2 per 10 target
+  private val numUpdaters = scaledWorkers(poolTarget)     // 1 per 10 target
 
   // --------------------------------------------------------------------------
   // Stats
