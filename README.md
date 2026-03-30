@@ -21,24 +21,42 @@ This project is structured as a multi-module SBT build:
 
 ## Getting Started
 
-### 1. Start the Service
-In one terminal, run the user management service:
+Because SBT locks the project directory, you cannot run both the service and the client using `sbt run` simultaneously. Instead, build the executable JARs first:
+
+### 1. Build the Artifacts
+From the project root:
 ```bash
-sbt "userService/run"
+sbt assembly
+```
+This produces:
+- `user-service/target/scala-3.3.7/user-service.jar`
+- `user-client/target/scala-3.3.7/user-client.jar`
+
+### 2. Start the Service
+In your first terminal, launch the user microservice:
+```bash
+java -jar user-service/target/scala-3.3.7/user-service.jar
 ```
 
-### 2. Run the Load Simulator
-In a separate terminal, run the client to simulate traffic:
+### 3. Run the Load Simulator
+In a separate terminal, launch the client to simulate traffic:
 ```bash
-sbt "userClient/run"
+java -jar user-client/target/scala-3.3.7/user-client.jar
 ```
 
-## Detailed Documentation
+## Configuration
 
-For more specific information on each component, refer to their respective READMEs:
+Both components connect to `nats://localhost:4222` by default. You can override this with the `NATS_URL` environment variable:
+```bash
+NATS_URL=nats://myserver:4222 java -jar ...
+```
 
-- [**User Service Guide**](./user-service/README.md) – Implementation details, storage configuration, and API handlers.
-- [**Load Simulator Guide**](./user-client/README.md) – Configuration options, worker scaling, and performance reporting.
+For component-specific configuration (like worker counts for the client), see the documentation below.
+
+## Component Documentation
+
+- [**User Service**](./user-service/README.md) – A NATS microservice managing user data in KV buckets.
+- [**Load Simulator**](./user-client/README.md) – A high-concurrency client for stress-testing the service.
 
 ## Features
 
@@ -46,6 +64,3 @@ For more specific information on each component, refer to their respective READM
 - **KV Persistence**: Demonstrates using NATS as a lightweight key-value store.
 - **Concurrent Load Testing**: A sophisticated simulator capable of generating thousands of operations per second with configurable worker pools.
 - **Clean Architecture**: Separation of concerns between API definitions, business logic, and infrastructure.
-
----
-Created by [pietersp](https://github.com/pietersp/zio-nats-service-demo).
