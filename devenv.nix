@@ -1,4 +1,10 @@
-{ pkgs, lib, config, inputs, ... }:
+{
+  pkgs,
+  lib,
+  config,
+  inputs,
+  ...
+}:
 
 let
   pkgs-unstable = import inputs.nixpkgs-unstable {
@@ -11,6 +17,7 @@ in
   cachix.enable = true;
 
   packages = [
+    pkgs.nil
     pkgs.git
     pkgs.natscli
     pkgs.nats-server
@@ -23,6 +30,10 @@ in
     enable = true;
     lsp.enable = true;
     sbt.enable = true;
+  };
+
+  languages.nix = {
+    enable = true;
   };
 
   # ---------------------------------------------------------------------------
