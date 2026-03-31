@@ -34,6 +34,16 @@ object LoadSimulator {
 
   import Codecs.json.derived
 
+  /** Shared context passed to every worker fiber. */
+  private final case class WorkerCtx(
+    nats: Nats,
+    pool: Pool,
+    stats: Ref[Stats],
+    cfg: LoadSimulatorConfig
+  )
+
+  private enum Op { case Create, Get, Update, Delete, List }
+
   private type Pool = Ref[Vector[String]]
 
   private val firstNames = Vector(
@@ -118,34 +128,72 @@ object LoadSimulator {
     def report(intervalSecs: Double, poolSize: Int, numCreators: Int, numReaders: Int, numUpdaters: Int): String = {
       def rate(n: Long)                       = f"${n / intervalSecs}%.0f/s"
       def rateDecimal(n: Long)                = f"${n / intervalSecs}%.3f/s"
-      def infraLine(count: Long, msg: String) = if (count > 0) f"$count%5d  ${msg.take(60)}" else "     -"
-      val totalRate                           = f"${totalOps / intervalSecs}%.0f"
-      val content                             = f" Load Report [${intervalSecs.toInt}s interval | $totalRate ops/s | pool: $poolSize users] "
-      val width                               = content.length + 8
-      val topLine                             = "╔═══" + content + "═══╗"
-      val botLine                             = "╚" + ("═" * (width - 2)) + "╝"
-      val header                              =
+      def infraLine(count: Long, msg: String) =
+        if (count > 0) f"$count%5d  ${msg.take(60)}" else "     -"
+
+      def createRow(workers: Int) =
+        f"""  ${"create"}%-8s ${workers}%8d ${rate(creates)}%8s  ${"-"}%9s  ${updateInvalid}%10d  ${infraLine(
+            createInfraErrors,
+            createInfraErrorMsg
+          )}%62s"""
+
+      def getRow(workers: Int) =
+        f"""  ${"get"}%-8s ${workers}%8d ${rate(getOk + getMissed)}%8s  ${getMissed}%9d  ${"-"}%10s  ${infraLine(
+            getInfraErrors,
+            getInfraErrorMsg
+          )}%62s"""
+
+      def updateRow(workers: Int) =
+        f"""  ${"update"}%-8s ${workers}%8d ${rate(
+            updateOk + updateMissed + updateInvalid
+          )}%8s  ${updateMissed}%9d  ${updateInvalid}%10d  ${infraLine(updateInfraErrors, updateInfraErrorMsg)}%62s"""
+
+      def deleteRow =
+        f"""  ${"delete"}%-8s ${1}%8d ${rate(deletes)}%8s  ${0}%9d  ${"-"}%10s  ${infraLine(
+            deleteInfraErrors,
+            deleteInfraErrorMsg
+          )}%62s"""
+
+      def listRow =
+        f"""  ${"list"}%-8s ${1}%8d ${rateDecimal(lists)}%8s  ${"-"}%9s  ${"-"}%10s  ${infraLine(
+            listInfraErrors,
+            listInfraErrorMsg
+          )}%62s"""
+
+      val totalRate = f"${totalOps / intervalSecs}%.0f"
+      val content   = f" Load Report [${intervalSecs.toInt}s interval | $totalRate ops/s | pool: $poolSize users] "
+      val width     = content.length + 8
+      val topLine   = "╔═══" + content + "═══╗"
+      val botLine   = "╚" + ("═" * (width - 2)) + "╝"
+      val header    =
         f"""  ${"OP"}%-8s ${"WORKERS"}%8s ${"RATE"}%8s  ${"NOT_FOUND"}%9s  ${"VALIDATION"}%10s  ${"INFRA"}%62s"""
-      val createLine = f"""  ${"create"}%-8s ${numCreators}%8d ${rate(
-          creates
-        )}%8s  ${"-"}%9s  ${updateInvalid}%10d  ${infraLine(createInfraErrors, createInfraErrorMsg)}%62s"""
-      val getLine = f"""  ${"get"}%-8s ${numReaders}%8d ${rate(
-          getOk + getMissed
-        )}%8s  ${getMissed}%9d  ${"-"}%10s  ${infraLine(getInfraErrors, getInfraErrorMsg)}%62s"""
-      val updateLine = f"""  ${"update"}%-8s ${numUpdaters}%8d ${rate(
-          updateOk + updateMissed + updateInvalid
-        )}%8s  ${updateMissed}%9d  ${updateInvalid}%10d  ${infraLine(updateInfraErrors, updateInfraErrorMsg)}%62s"""
-      val deleteLine = f"""  ${"delete"}%-8s ${1}%8d ${rate(deletes)}%8s  ${0}%9d  ${"-"}%10s  ${infraLine(
-          deleteInfraErrors,
-          deleteInfraErrorMsg
-        )}%62s"""
-      val listLine = f"""  ${"list"}%-8s ${1}%8d ${rateDecimal(lists)}%8s  ${"-"}%9s  ${"-"}%10s  ${infraLine(
-          listInfraErrors,
-          listInfraErrorMsg
-        )}%62s"""
-      s"""$topLine\n$header\n$createLine\n$getLine\n$updateLine\n$deleteLine\n$listLine\n  infra errors: $infraErrors  $lastInfraError\n$botLine"""
+
+      s"""$topLine
+         |$header
+         |${createRow(numCreators)}
+         |${getRow(numReaders)}
+         |${updateRow(numUpdaters)}
+         |${deleteRow}
+         |${listRow}
+         |  infra errors: $infraErrors  $lastInfraError
+         |$botLine""".stripMargin
     }
   }
+
+  // --------------------------------------------------------------------------
+  // Infra error tracking
+  // --------------------------------------------------------------------------
+
+  private def trackInfra(stats: Ref[Stats], op: Op)(err: NatsError): UIO[Unit] =
+    stats.update { s =>
+      val base = s.copy(infraErrors = s.infraErrors + 1, lastInfraError = err.toString)
+      op match
+        case Op.Create => base.copy(createInfraErrors = s.createInfraErrors + 1, createInfraErrorMsg = err.toString)
+        case Op.Get    => base.copy(getInfraErrors = s.getInfraErrors + 1, getInfraErrorMsg = err.toString)
+        case Op.Update => base.copy(updateInfraErrors = s.updateInfraErrors + 1, updateInfraErrorMsg = err.toString)
+        case Op.Delete => base.copy(deleteInfraErrors = s.deleteInfraErrors + 1, deleteInfraErrorMsg = err.toString)
+        case Op.List   => base.copy(listInfraErrors = s.listInfraErrors + 1, listInfraErrorMsg = err.toString)
+    }
 
   // --------------------------------------------------------------------------
   // Workers
@@ -154,8 +202,9 @@ object LoadSimulator {
   /**
    * Creates a user; throttles when the pool is at capacity.
    */
-  private def creatorLoop(nats: Nats, pool: Pool, stats: Ref[Stats], cfg: LoadSimulatorConfig): UIO[Nothing] = {
-    val step = pool.get.map(_.size).flatMap { size =>
+  private def creatorLoop(ctx: WorkerCtx): UIO[Nothing] = {
+    val WorkerCtx(nats, pool, stats, cfg) = ctx
+    val step                              = pool.get.map(_.size).flatMap { size =>
       if size >= cfg.poolTarget then ZIO.sleep(cfg.creatorThrottleDelay)
       else {
         val name  = randomName()
@@ -165,15 +214,7 @@ object LoadSimulator {
           .foldZIO(
             {
               case _: ValidationError => ZIO.unit
-              case err: NatsError     =>
-                stats.update(s =>
-                  s.copy(
-                    infraErrors = s.infraErrors + 1,
-                    createInfraErrors = s.createInfraErrors + 1,
-                    createInfraErrorMsg = err.toString,
-                    lastInfraError = err.toString
-                  )
-                )
+              case err: NatsError     => trackInfra(stats, Op.Create)(err)
             },
             user =>
               pool.update(_ :+ user.id) *>
@@ -185,8 +226,9 @@ object LoadSimulator {
   }
 
   /** Gets a random user. */
-  private def readerLoop(nats: Nats, pool: Pool, stats: Ref[Stats], cfg: LoadSimulatorConfig): UIO[Nothing] = {
-    val step = randomId(pool).flatMap {
+  private def readerLoop(ctx: WorkerCtx): UIO[Nothing] = {
+    val WorkerCtx(nats, pool, stats, cfg) = ctx
+    val step                              = randomId(pool).flatMap {
       case None     => ZIO.sleep(cfg.readerDelay)
       case Some(id) =>
         nats
@@ -194,15 +236,7 @@ object LoadSimulator {
           .foldZIO(
             {
               case _: UserNotFound => stats.update(s => s.copy(getMissed = s.getMissed + 1))
-              case err: NatsError  =>
-                stats.update(s =>
-                  s.copy(
-                    infraErrors = s.infraErrors + 1,
-                    getInfraErrors = s.getInfraErrors + 1,
-                    getInfraErrorMsg = err.toString,
-                    lastInfraError = err.toString
-                  )
-                )
+              case err: NatsError  => trackInfra(stats, Op.Get)(err)
             },
             _ => stats.update(s => s.copy(getOk = s.getOk + 1))
           ) *> ZIO.sleep(cfg.readerDelay)
@@ -216,14 +250,9 @@ object LoadSimulator {
    * When `injectErrors` is true, one in five requests sends a blank name to
    * exercise the ValidationError path.
    */
-  private def updaterLoop(
-    nats: Nats,
-    pool: Pool,
-    stats: Ref[Stats],
-    cfg: LoadSimulatorConfig,
-    injectErrors: Boolean
-  ): UIO[Nothing] = {
-    val step = randomId(pool).flatMap {
+  private def updaterLoop(ctx: WorkerCtx, injectErrors: Boolean): UIO[Nothing] = {
+    val WorkerCtx(nats, pool, stats, cfg) = ctx
+    val step                              = randomId(pool).flatMap {
       case None     => ZIO.sleep(cfg.updaterDelay)
       case Some(id) =>
         val newName =
@@ -239,15 +268,7 @@ object LoadSimulator {
             {
               case _: UserNotFound    => stats.update(s => s.copy(updateMissed = s.updateMissed + 1))
               case _: ValidationError => stats.update(s => s.copy(updateInvalid = s.updateInvalid + 1))
-              case err: NatsError     =>
-                stats.update(s =>
-                  s.copy(
-                    infraErrors = s.infraErrors + 1,
-                    updateInfraErrors = s.updateInfraErrors + 1,
-                    updateInfraErrorMsg = err.toString,
-                    lastInfraError = err.toString
-                  )
-                )
+              case err: NatsError     => trackInfra(stats, Op.Update)(err)
             },
             _ => stats.update(s => s.copy(updateOk = s.updateOk + 1))
           ) *> ZIO.sleep(cfg.updaterDelay)
@@ -258,8 +279,9 @@ object LoadSimulator {
   /**
    * Deletes a random user, but only when the pool exceeds poolMin.
    */
-  private def deleterLoop(nats: Nats, pool: Pool, stats: Ref[Stats], cfg: LoadSimulatorConfig): UIO[Nothing] = {
-    val step = pool.get.map(_.size).flatMap { size =>
+  private def deleterLoop(ctx: WorkerCtx): UIO[Nothing] = {
+    val WorkerCtx(nats, pool, stats, cfg) = ctx
+    val step                              = pool.get.map(_.size).flatMap { size =>
       if size <= cfg.poolMin then ZIO.sleep(cfg.deleterDelay)
       else
         randomId(pool).flatMap {
@@ -270,15 +292,7 @@ object LoadSimulator {
               .foldZIO(
                 {
                   case _: UserNotFound => pool.update(_.filterNot(_ == id))
-                  case err: NatsError  =>
-                    stats.update(s =>
-                      s.copy(
-                        infraErrors = s.infraErrors + 1,
-                        deleteInfraErrors = s.deleteInfraErrors + 1,
-                        deleteInfraErrorMsg = err.toString,
-                        lastInfraError = err.toString
-                      )
-                    )
+                  case err: NatsError  => trackInfra(stats, Op.Delete)(err)
                 },
                 _ => pool.update(_.filterNot(_ == id)) *> stats.update(s => s.copy(deletes = s.deletes + 1))
               ) *> ZIO.sleep(cfg.deleterDelay)
@@ -288,21 +302,13 @@ object LoadSimulator {
   }
 
   /** Lists all users. */
-  private def listerLoop(nats: Nats, stats: Ref[Stats], cfg: LoadSimulatorConfig): UIO[Nothing] = {
-    val step =
+  private def listerLoop(ctx: WorkerCtx): UIO[Nothing] = {
+    val WorkerCtx(nats, pool, stats, cfg) = ctx
+    val step                              =
       nats
         .requestService(UserEndpoints.listUsers, ListUsersRequest(), cfg.callTimeout)
         .foldZIO(
-          { case err: NatsError =>
-            stats.update(s =>
-              s.copy(
-                infraErrors = s.infraErrors + 1,
-                listInfraErrors = s.listInfraErrors + 1,
-                listInfraErrorMsg = err.toString,
-                lastInfraError = err.toString
-              )
-            )
-          },
+          { case err: NatsError => trackInfra(stats, Op.List)(err) },
           _ => stats.update(s => s.copy(lists = s.lists + 1))
         ) *> ZIO.sleep(cfg.listerDelay)
     step.forever
@@ -312,7 +318,8 @@ object LoadSimulator {
    * Snapshots and resets the stats counters every [[reportEvery]], then prints
    * the interval report to stdout.
    */
-  private def reporterLoop(pool: Pool, stats: Ref[Stats], cfg: LoadSimulatorConfig): UIO[Nothing] = {
+  private def reporterLoop(ctx: WorkerCtx): UIO[Nothing] = {
+    val WorkerCtx(_, pool, stats, cfg)         = ctx
     val (numCreators, numReaders, numUpdaters) = workerCounts(cfg)
     val step                                   =
       pool.get
@@ -347,14 +354,15 @@ object LoadSimulator {
       pool                                  <- Ref.make(Vector.empty[String])
       stats                                 <- Ref.make(Stats())
       _                                     <- Console.printLine("Load simulator started. Press Ctrl-C to stop.").orDie
+      ctx                                    = WorkerCtx(nats, pool, stats, cfg)
       (numCreators, numReaders, numUpdaters) = workerCounts(cfg)
       _                                     <-
         ZIO.collectAllParDiscard(
-          List.fill(numCreators)(creatorLoop(nats, pool, stats, cfg))
-            ::: List.fill(numReaders)(readerLoop(nats, pool, stats, cfg))
-            ::: List.fill(numUpdaters)(updaterLoop(nats, pool, stats, cfg, injectErrors = false))
-            ::: List(updaterLoop(nats, pool, stats, cfg, injectErrors = true))
-            ::: List(deleterLoop(nats, pool, stats, cfg), listerLoop(nats, stats, cfg), reporterLoop(pool, stats, cfg))
+          List.fill(numCreators)(creatorLoop(ctx))
+            ::: List.fill(numReaders)(readerLoop(ctx))
+            ::: List.fill(numUpdaters)(updaterLoop(ctx, injectErrors = false))
+            ::: List(updaterLoop(ctx, injectErrors = true))
+            ::: List(deleterLoop(ctx), listerLoop(ctx), reporterLoop(ctx))
         )
     } yield ()
 }
