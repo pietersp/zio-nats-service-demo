@@ -19,6 +19,20 @@ This project is structured as a multi-module SBT build:
   docker run -p 4222:4222 nats -js
   ```
 
+## Development Environment (optional)
+
+**Not required.** The rest of this guide shows how to build and run the project with plain SBT and Docker. This section is only for contributors who want a reproducible dev shell.
+
+This project includes a [devenv](https://devenv.sh/) configuration that provides Java, SBT, NATS server, and the `nats` CLI tool. If you have [devenv](https://devenv.sh/getting-started/) installed:
+
+```bash
+devenv shell        # enter the environment
+devenv up           # start NATS + JetStream in the background
+devenv shell        # then run format, check, build, etc.
+```
+
+Available scripts: `format`, `check`, `build`, `run-service`, `run-client`.
+
 ## Getting Started
 
 Because SBT locks the project directory, you cannot run both the service and the client using `sbt run` simultaneously. Instead, build the executable JARs first:
