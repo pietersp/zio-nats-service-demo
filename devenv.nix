@@ -49,10 +49,10 @@ in
     build.exec = "sbt assembly";
 
     # Run the user-service (requires NATS: devenv up [-d] nats)
-    run-service.exec = "sbt userService/run";
+    run-service.exec = "sbt userService/assembly && java -jar user-service/target/scala-3.3.7/user-service.jar";
 
     # Run the load-simulation client (requires NATS + user-service running)
-    run-client.exec = "sbt userClient/run";
+    run-client.exec = "sbt userClient/assembly && java -jar user-client/target/scala-3.3.7/user-client.jar";
   };
 
   # ---------------------------------------------------------------------------
