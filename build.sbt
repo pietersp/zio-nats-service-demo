@@ -3,23 +3,38 @@ ThisBuild / scalacOptions ++= Seq("-deprecation", "-feature")
 ThisBuild / Compile / semanticdbEnabled := true
 ThisBuild / run / fork                  := true
 
-val zioNats = "io.github.pietersp" %% "zio-nats" % "0.1.0-RC10"
+val zioNats           = "io.github.pietersp" %% "zio-nats"            % "0.1.0-RC10"
+val zioConfigTypesafe = "dev.zio"            %% "zio-config-typesafe" % "4.0.4"
 
-val assemblySettings = Seq(
-  assembly / assemblyMergeStrategy := {
-    case "module-info.class"           => MergeStrategy.discard
-    case "reference.conf"              => MergeStrategy.concat
-    case PathList("META-INF", xs @ _*) =>
-      xs match {
-        // Discard manifests and all JAR signature files (e.g. from bouncycastle)
-        case "MANIFEST.MF" :: Nil                                                                           => MergeStrategy.discard
-        case x :: Nil if x.endsWith(".SF") || x.endsWith(".RSA") || x.endsWith(".DSA") || x.endsWith(".EC") =>
-          MergeStrategy.discard
-        case _ => MergeStrategy.first
-      }
-    case _ => MergeStrategy.first
-  }
-)
+/**
+ * sbt-assembly merge strategy.
+ *
+ * sbt-assembly performs a deduplicate check BEFORE applying merge strategies.
+ * If the same entry path appears in two JARs with different contents, assembly
+ * fails immediately — the strategy never gets a chance to resolve it.
+ *
+ * Multi-release JARs (bcprov-lts8on, jspecify) both ship conflicting copies of
+ * META-INF/versions/9/module-info.class and OSGI-INF/MANIFEST.MF, so these
+ * paths must be explicitly discarded.
+ */
+ThisBuild / assemblyMergeStrategy := {
+  // Multi-release JAR entries (Java 9+ class files)
+  case PathList("META-INF", "versions", _*) => MergeStrategy.discard
+  // JP9 module descriptors inside META-INF/services
+  case PathList("META-INF", "services", xs @ _*) if xs.last == "module-info" => MergeStrategy.discard
+  // Standalone module-info.class files
+  case s if s.endsWith("module-info.class") => MergeStrategy.discard
+  // HOCON reference files from multiple libraries
+  case "reference.conf" => MergeStrategy.concat
+  // OSGI / JAR manifests
+  case PathList("META-INF", xs @ _*) if xs.last.contains("MANIFEST") => MergeStrategy.discard
+  // JAR signature files (e.g. from bouncycastle)
+  case s if s.endsWith(".SF") || s.endsWith(".RSA") || s.endsWith(".DSA") || s.endsWith(".EC") =>
+    MergeStrategy.discard
+  case x =>
+    val oldStrategy = (ThisBuild / assemblyMergeStrategy).value
+    oldStrategy(x)
+}
 
 /**
  * Shared API contract: domain models, error types, and endpoint descriptors.
@@ -29,7 +44,8 @@ lazy val userApi = project
   .in(file("user-api"))
   .settings(
     name := "user-api",
-    libraryDependencies += zioNats
+    libraryDependencies += zioNats,
+    assembly / skip := true
   )
 
 /** NATS microservice: user management backed by NATS KV. */
@@ -42,7 +58,6 @@ lazy val userService = project
     assembly / mainClass       := Some("demo.Main"),
     assembly / assemblyJarName := "user-service.jar"
   )
-  .settings(assemblySettings)
 
 /**
  * Load-simulation client: exercises all user service endpoints under concurrent
@@ -53,11 +68,10 @@ lazy val userClient = project
   .dependsOn(userApi)
   .settings(
     name := "user-client",
-    libraryDependencies += zioNats,
+    libraryDependencies ++= Seq(zioNats, zioConfigTypesafe),
     assembly / mainClass       := Some("demo.client.Main"),
     assembly / assemblyJarName := "user-client.jar"
   )
-  .settings(assemblySettings)
 
 lazy val root = project
   .in(file("."))

@@ -12,18 +12,20 @@ import scala.util.Random
  * Simulates concurrent production-like traffic against the user service.
  *
  * Worker counts scale dynamically with poolTarget:
- *   - creators: 1 per 10 of poolTarget (throttle when pool exceeds poolTarget)
- *   - readers: 2 per 10 of poolTarget (or 1 per 5 of poolTarget) — GET a random user every ~30 ms
- *   - updaters: 1 per 10 of poolTarget — UPDATE a random user every ~80 ms
- *   - 1 error injector — UPDATE with a blank name every ~80 ms (exercises
- *     ValidationError)
- *   - 1 deleter fiber — DELETE a random user every ~200 ms when pool > poolMin
- *   - 1 lister fiber — LIST all users every 1 s
+ *   - creators: [[creatorWorkersPer10]] per 10 of poolTarget (throttle when
+ *     pool exceeds poolTarget)
+ *   - readers: [[readerWorkersPer10]] per 10 of poolTarget — GET a random user
+ *     every [[readerDelay]]
+ *   - updaters: [[updaterWorkersPer10]] per 10 of poolTarget — UPDATE a random
+ *     user every [[updaterDelay]]
+ *   - 1 error injector — UPDATE with a blank name every [[updaterDelay]]
+ *     (exercises ValidationError)
+ *   - 1 deleter fiber — DELETE a random user every [[deleterDelay]] when pool >
+ *     poolMin
+ *   - 1 lister fiber — LIST all users every [[listerDelay]]
  *
- * Configuration (via env):
- *   - POOL_TARGET (default 1000): The maximum size of the user pool before creators throttle.
- *   - POOL_MIN (default 80): The minimum size of the user pool before deleters stop.
- *   - REPORT_EVERY (default 5s): Interval for printing load reports.
+ * Configuration is loaded via [[LoadSimulatorConfig]] from `application.conf`
+ * (HOCON), falling back to environment variables.
  *
  * A stats reporter prints per-interval throughput and error breakdown to
  * stdout. Press Ctrl-C to stop cleanly.
@@ -32,16 +34,57 @@ object LoadSimulator {
 
   import Codecs.json.derived
 
-  private val callTimeout = 5.seconds
-  private val poolTarget  = sys.env.getOrElse("POOL_TARGET", "1000").toInt
-  private val poolMin     = sys.env.getOrElse("POOL_MIN", "80").toInt
-  private val reportEvery = sys.env.getOrElse("REPORT_EVERY_SECS", "5").toInt.seconds
+  private type Pool = Ref[Vector[String]]
 
-  private def scaledWorkers(n: Int): Int = (n / 10).max(1)
+  private val firstNames = Vector(
+    "Alice",
+    "Bob",
+    "Carol",
+    "David",
+    "Eve",
+    "Frank",
+    "Grace",
+    "Hank",
+    "Iris",
+    "Jack",
+    "Kate",
+    "Liam",
+    "Mia",
+    "Noah",
+    "Olivia",
+    "Paul",
+    "Quinn",
+    "Rose",
+    "Sam",
+    "Tina",
+    "Uma",
+    "Victor",
+    "Wendy",
+    "Yara"
+  )
+  private val domains = Vector("example.com", "test.org", "demo.io", "mail.net")
 
-  private val numCreators = scaledWorkers(poolTarget)     // 1 per 10 target
-  private val numReaders  = scaledWorkers(poolTarget * 2) // 2 per 10 target
-  private val numUpdaters = scaledWorkers(poolTarget)     // 1 per 10 target
+  private def randomName(): String =
+    firstNames(Random.nextInt(firstNames.size))
+
+  private def randomEmail(name: String): String =
+    s"${name.toLowerCase}${Random.nextInt(9000) + 1000}@${domains(Random.nextInt(domains.size))}"
+
+  /** Pick a random ID from the pool; returns None if the pool is empty. */
+  private def randomId(pool: Pool): UIO[Option[String]] =
+    pool.get.map { v =>
+      if v.isEmpty then None
+      else Some(v(Random.nextInt(v.size)))
+    }
+
+  private def scaledWorkers(n: Int, per10: Int): Int = ((n * per10) / 10).max(1)
+
+  private def workerCounts(cfg: LoadSimulatorConfig): (Int, Int, Int) =
+    (
+      scaledWorkers(cfg.poolTarget, cfg.creatorWorkersPer10),
+      scaledWorkers(cfg.poolTarget, cfg.readerWorkersPer10),
+      scaledWorkers(cfg.poolTarget, cfg.updaterWorkersPer10)
+    )
 
   // --------------------------------------------------------------------------
   // Stats
@@ -105,70 +148,23 @@ object LoadSimulator {
   }
 
   // --------------------------------------------------------------------------
-  // Helpers
-  // --------------------------------------------------------------------------
-
-  private type Pool = Ref[Vector[String]]
-
-  private val firstNames = Vector(
-    "Alice",
-    "Bob",
-    "Carol",
-    "David",
-    "Eve",
-    "Frank",
-    "Grace",
-    "Hank",
-    "Iris",
-    "Jack",
-    "Kate",
-    "Liam",
-    "Mia",
-    "Noah",
-    "Olivia",
-    "Paul",
-    "Quinn",
-    "Rose",
-    "Sam",
-    "Tina",
-    "Uma",
-    "Victor",
-    "Wendy",
-    "Yara"
-  )
-  private val domains = Vector("example.com", "test.org", "demo.io", "mail.net")
-
-  private def randomName(): String =
-    firstNames(Random.nextInt(firstNames.size))
-
-  private def randomEmail(name: String): String =
-    s"${name.toLowerCase}${Random.nextInt(9000) + 1000}@${domains(Random.nextInt(domains.size))}"
-
-  /** Pick a random ID from the pool; returns None if the pool is empty. */
-  private def randomId(pool: Pool): UIO[Option[String]] =
-    pool.get.map { v =>
-      if v.isEmpty then None
-      else Some(v(Random.nextInt(v.size)))
-    }
-
-  // --------------------------------------------------------------------------
   // Workers
   // --------------------------------------------------------------------------
 
   /**
-   * Creates a user; throttles to once per 500 ms when the pool is at capacity.
+   * Creates a user; throttles when the pool is at capacity.
    */
-  private def creatorLoop(nats: Nats, pool: Pool, stats: Ref[Stats]): UIO[Nothing] = {
+  private def creatorLoop(nats: Nats, pool: Pool, stats: Ref[Stats], cfg: LoadSimulatorConfig): UIO[Nothing] = {
     val step = pool.get.map(_.size).flatMap { size =>
-      if size >= poolTarget then ZIO.sleep(500.millis)
+      if size >= cfg.poolTarget then ZIO.sleep(cfg.creatorThrottleDelay)
       else {
         val name  = randomName()
         val email = randomEmail(name)
         nats
-          .requestService(UserEndpoints.createUser, CreateUserRequest(name, email), callTimeout)
+          .requestService(UserEndpoints.createUser, CreateUserRequest(name, email), cfg.callTimeout)
           .foldZIO(
             {
-              case _: ValidationError => ZIO.unit // Business error - don't count as infra
+              case _: ValidationError => ZIO.unit
               case err: NatsError     =>
                 stats.update(s =>
                   s.copy(
@@ -188,13 +184,13 @@ object LoadSimulator {
     step.forever
   }
 
-  /** Gets a random user every ~30 ms. */
-  private def readerLoop(nats: Nats, pool: Pool, stats: Ref[Stats]): UIO[Nothing] = {
+  /** Gets a random user. */
+  private def readerLoop(nats: Nats, pool: Pool, stats: Ref[Stats], cfg: LoadSimulatorConfig): UIO[Nothing] = {
     val step = randomId(pool).flatMap {
-      case None     => ZIO.sleep(50.millis)
+      case None     => ZIO.sleep(cfg.readerDelay)
       case Some(id) =>
         nats
-          .requestService(UserEndpoints.getUser, GetUserRequest(id), callTimeout)
+          .requestService(UserEndpoints.getUser, GetUserRequest(id), cfg.callTimeout)
           .foldZIO(
             {
               case _: UserNotFound => stats.update(s => s.copy(getMissed = s.getMissed + 1))
@@ -209,13 +205,13 @@ object LoadSimulator {
                 )
             },
             _ => stats.update(s => s.copy(getOk = s.getOk + 1))
-          ) *> ZIO.sleep(30.millis)
+          ) *> ZIO.sleep(cfg.readerDelay)
     }
     step.forever
   }
 
   /**
-   * Updates a random user every ~80 ms.
+   * Updates a random user.
    *
    * When `injectErrors` is true, one in five requests sends a blank name to
    * exercise the ValidationError path.
@@ -224,19 +220,20 @@ object LoadSimulator {
     nats: Nats,
     pool: Pool,
     stats: Ref[Stats],
+    cfg: LoadSimulatorConfig,
     injectErrors: Boolean
   ): UIO[Nothing] = {
     val step = randomId(pool).flatMap {
-      case None     => ZIO.sleep(80.millis)
+      case None     => ZIO.sleep(cfg.updaterDelay)
       case Some(id) =>
         val newName =
-          if injectErrors && Random.nextInt(5) == 0 then "" // blank → ValidationError
+          if injectErrors && Random.nextInt(5) == 0 then ""
           else randomName()
         nats
           .requestService(
             UserEndpoints.updateUser,
             UpdateUserRequest(id, name = Some(newName)),
-            callTimeout
+            cfg.callTimeout
           )
           .foldZIO(
             {
@@ -253,51 +250,48 @@ object LoadSimulator {
                 )
             },
             _ => stats.update(s => s.copy(updateOk = s.updateOk + 1))
-          ) *> ZIO.sleep(80.millis)
+          ) *> ZIO.sleep(cfg.updaterDelay)
     }
     step.forever
   }
 
   /**
-   * Deletes a random user every ~200 ms, but only when the pool exceeds
-   * poolMin.
+   * Deletes a random user, but only when the pool exceeds poolMin.
    */
-  private def deleterLoop(nats: Nats, pool: Pool, stats: Ref[Stats]): UIO[Nothing] = {
+  private def deleterLoop(nats: Nats, pool: Pool, stats: Ref[Stats], cfg: LoadSimulatorConfig): UIO[Nothing] = {
     val step = pool.get.map(_.size).flatMap { size =>
-      if size <= poolMin then ZIO.sleep(200.millis)
+      if size <= cfg.poolMin then ZIO.sleep(cfg.deleterDelay)
       else
         randomId(pool).flatMap {
-          case None     => ZIO.sleep(200.millis)
+          case None     => ZIO.sleep(cfg.deleterDelay)
           case Some(id) =>
-            // Remove optimistically so concurrent deleters don't double-attempt the same ID.
-            pool.update(_.filter(_ != id)) *>
-              nats
-                .requestService(UserEndpoints.deleteUser, DeleteUserRequest(id), callTimeout)
-                .foldZIO(
-                  {
-                    case _: UserNotFound => ZIO.unit // Optimistic delete - already removed from pool
-                    case err: NatsError  =>
-                      stats.update(s =>
-                        s.copy(
-                          infraErrors = s.infraErrors + 1,
-                          deleteInfraErrors = s.deleteInfraErrors + 1,
-                          deleteInfraErrorMsg = err.toString,
-                          lastInfraError = err.toString
-                        )
+            nats
+              .requestService(UserEndpoints.deleteUser, DeleteUserRequest(id), cfg.callTimeout)
+              .foldZIO(
+                {
+                  case _: UserNotFound => pool.update(_.filterNot(_ == id))
+                  case err: NatsError  =>
+                    stats.update(s =>
+                      s.copy(
+                        infraErrors = s.infraErrors + 1,
+                        deleteInfraErrors = s.deleteInfraErrors + 1,
+                        deleteInfraErrorMsg = err.toString,
+                        lastInfraError = err.toString
                       )
-                  },
-                  _ => stats.update(s => s.copy(deletes = s.deletes + 1))
-                ) *> ZIO.sleep(200.millis)
+                    )
+                },
+                _ => pool.update(_.filterNot(_ == id)) *> stats.update(s => s.copy(deletes = s.deletes + 1))
+              ) *> ZIO.sleep(cfg.deleterDelay)
         }
     }
     step.forever
   }
 
-  /** Lists all users every second. */
-  private def listerLoop(nats: Nats, stats: Ref[Stats]): UIO[Nothing] = {
+  /** Lists all users. */
+  private def listerLoop(nats: Nats, stats: Ref[Stats], cfg: LoadSimulatorConfig): UIO[Nothing] = {
     val step =
       nats
-        .requestService(UserEndpoints.listUsers, ListUsersRequest(), callTimeout)
+        .requestService(UserEndpoints.listUsers, ListUsersRequest(), cfg.callTimeout)
         .foldZIO(
           { case err: NatsError =>
             stats.update(s =>
@@ -310,7 +304,7 @@ object LoadSimulator {
             )
           },
           _ => stats.update(s => s.copy(lists = s.lists + 1))
-        ) *> ZIO.sleep(1.seconds)
+        ) *> ZIO.sleep(cfg.listerDelay)
     step.forever
   }
 
@@ -318,20 +312,21 @@ object LoadSimulator {
    * Snapshots and resets the stats counters every [[reportEvery]], then prints
    * the interval report to stdout.
    */
-  private def reporterLoop(pool: Pool, stats: Ref[Stats]): UIO[Nothing] = {
-    val step =
+  private def reporterLoop(pool: Pool, stats: Ref[Stats], cfg: LoadSimulatorConfig): UIO[Nothing] = {
+    val (numCreators, numReaders, numUpdaters) = workerCounts(cfg)
+    val step                                   =
       pool.get
         .map(_.size)
         .flatMap { poolSize =>
           stats.getAndUpdate(s => Stats(lastInfraError = s.lastInfraError)).flatMap { snapshot =>
             Console
               .printLine(
-                snapshot.report(reportEvery.toSeconds.toDouble, poolSize, numCreators, numReaders, numUpdaters)
+                snapshot.report(cfg.reportEvery.toSeconds.toDouble, poolSize, numCreators, numReaders, numUpdaters)
               )
               .orDie
           }
         }
-        .delay(reportEvery)
+        .delay(cfg.reportEvery)
     step.forever
   }
 
@@ -343,21 +338,23 @@ object LoadSimulator {
    * Runs the load simulator indefinitely (until interrupted).
    *
    * All worker fibers are started concurrently via
-   * [[ZIO.collectAllParDiscard]]. The first infra error that crashes a fiber
-   * will interrupt the others.
+   * [[ZIO.collectAllParDiscard]].
    */
-  val run: ZIO[Nats, Nothing, Unit] =
+  val run: ZIO[Nats & LoadSimulatorConfig, Nothing, Unit] =
     for {
-      nats  <- ZIO.service[Nats]
-      pool  <- Ref.make(Vector.empty[String])
-      stats <- Ref.make(Stats())
-      _     <- Console.printLine("Load simulator started. Press Ctrl-C to stop.").orDie
-      _     <- ZIO.collectAllParDiscard(
-             List.fill(numCreators)(creatorLoop(nats, pool, stats))
-               ::: List.fill(numReaders)(readerLoop(nats, pool, stats))
-               ::: List.fill(numUpdaters)(updaterLoop(nats, pool, stats, injectErrors = false))
-               ::: List(updaterLoop(nats, pool, stats, injectErrors = true))
-               ::: List(deleterLoop(nats, pool, stats), listerLoop(nats, stats), reporterLoop(pool, stats))
-           )
+      cfg                                   <- ZIO.service[LoadSimulatorConfig]
+      nats                                  <- ZIO.service[Nats]
+      pool                                  <- Ref.make(Vector.empty[String])
+      stats                                 <- Ref.make(Stats())
+      _                                     <- Console.printLine("Load simulator started. Press Ctrl-C to stop.").orDie
+      (numCreators, numReaders, numUpdaters) = workerCounts(cfg)
+      _                                     <-
+        ZIO.collectAllParDiscard(
+          List.fill(numCreators)(creatorLoop(nats, pool, stats, cfg))
+            ::: List.fill(numReaders)(readerLoop(nats, pool, stats, cfg))
+            ::: List.fill(numUpdaters)(updaterLoop(nats, pool, stats, cfg, injectErrors = false))
+            ::: List(updaterLoop(nats, pool, stats, cfg, injectErrors = true))
+            ::: List(deleterLoop(nats, pool, stats, cfg), listerLoop(nats, stats, cfg), reporterLoop(pool, stats, cfg))
+        )
     } yield ()
 }
